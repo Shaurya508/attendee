@@ -839,7 +839,10 @@ class BotController:
         if self.get_recording_transcription_provider() == TranscriptionProviders.SARVAM:
             return 1  # seconds
         else:
-            return 3  # seconds
+            # Local patch: this wait is the floor of transcript latency for a voice agent
+            # (utterance is only sent to the provider after this much silence). Env override,
+            # default unchanged.
+            return float(os.environ.get("NON_STREAMING_AUDIO_SILENCE_DURATION_LIMIT", "3"))
 
     def run(self):
         if self.run_called:
