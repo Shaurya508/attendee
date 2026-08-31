@@ -39,7 +39,12 @@ class GstVideoStreamTrack(MediaStreamTrack):
         self._base_pts_ns = None
 
     def _pull_sample(self):
-        return self._sink.emit("pull-sample")
+        # GstApp.AppSink.pull_sample() returns a properly typed Gst.Sample; the generic
+        # emit("pull-sample") path marshals a boxed value whose wrapper class can differ
+        # from Gst.Sample under some PyGObject builds, which then fails
+        # sample.get_buffer() with "Expected Gst.Sample, but got gi.repository.Gst.Sample"
+        # (seen on Docker Desktop / linux-amd64 emulation) — killing the video track.
+        return self._sink.pull_sample()
 
     async def recv(self) -> VideoFrame:
         loop = asyncio.get_running_loop()
@@ -101,7 +106,12 @@ class GstAudioStreamTrack(MediaStreamTrack):
         self._base_pts_ns = None
 
     def _pull_sample(self):
-        return self._sink.emit("pull-sample")
+        # GstApp.AppSink.pull_sample() returns a properly typed Gst.Sample; the generic
+        # emit("pull-sample") path marshals a boxed value whose wrapper class can differ
+        # from Gst.Sample under some PyGObject builds, which then fails
+        # sample.get_buffer() with "Expected Gst.Sample, but got gi.repository.Gst.Sample"
+        # (seen on Docker Desktop / linux-amd64 emulation) — killing the video track.
+        return self._sink.pull_sample()
 
     async def recv(self) -> AudioFrame:
         loop = asyncio.get_running_loop()
@@ -234,6 +244,10 @@ class WebpageStreamer:
         options = webdriver.ChromeOptions()
 
         options.add_argument("--autoplay-policy=no-user-gesture-required")
+        # Local patch: non-browser User-Agent so ngrok's free-tier "You are about to visit"
+        # interstitial (shown only to browser UAs) is skipped when the voice-agent page is
+        # served through an ngrok tunnel. Harmless for any other host.
+        options.add_argument("--user-agent=AttendeeWebpageStreamer/1.0")
         options.add_argument("--use-fake-device-for-media-stream")
         # options.add_argument("--use-fake-ui-for-media-stream")
         options.add_argument(f"--window-size={self.video_frame_size[0]},{self.video_frame_size[1]}")
