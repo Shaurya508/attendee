@@ -633,7 +633,10 @@ class GoogleMeetUIMethods:
             wait_time_seconds=6,
         )
         logger.info("Clicking the close button")
-        self.click_element(close_button, "close_button")
+        # LOCAL PATCH: located by presence, so the dialog can still be animating when the
+        # click lands -> ElementNotInteractableException -> the whole join is retried and
+        # Meet shows a fresh knock. The JS-click fallback already exists for exactly this.
+        self.click_element_with_fallback_to_forceful_click(close_button, "close_button")
 
     def disable_incoming_video_in_ui(self):
         # First check if incoming video is already disabled. This is what we expect because
@@ -1264,7 +1267,10 @@ class GoogleMeetUIMethods:
             wait_time_seconds=6,
         )
         logger.info("Clicking the close button")
-        self.click_element(close_button, "close_button")
+        # LOCAL PATCH: located by presence, so the dialog can still be animating when the
+        # click lands -> ElementNotInteractableException -> the whole join is retried and
+        # Meet shows a fresh knock. The JS-click fallback already exists for exactly this.
+        self.click_element_with_fallback_to_forceful_click(close_button, "close_button")
 
     def click_leave_button(self):
         logger.info("Waiting for the leave button")
