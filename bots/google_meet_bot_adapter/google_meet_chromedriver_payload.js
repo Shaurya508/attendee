@@ -2117,11 +2117,45 @@ const handleAudioTrack = async (event) => {
   }
 };
 
+// emmy: Meet caps its presentation (screenshare) sender at ~5 fps — measured 4-6 fps out of a
+// 25 fps source with qualityLimitationReason "none", i.e. an application cap, not CPU or
+// bandwidth. The voice agent's screenshare track is the one whose contentHint the shared
+// payload pins to "motion"; for that track only, lift any maxFramerate below 25 to 30.
+(() => {
+    const emmyLift = (encodings, track) => {
+        if (!track || track.kind !== 'video' || track.contentHint !== 'motion' || !Array.isArray(encodings)) return;
+        for (const enc of encodings) {
+            if (typeof enc.maxFramerate === 'number' && enc.maxFramerate < 25) enc.maxFramerate = 30;
+        }
+    };
+    const senderProto = window.RTCRtpSender && window.RTCRtpSender.prototype;
+    if (senderProto && !senderProto.__emmyFpsLift) {
+        senderProto.__emmyFpsLift = true;
+        const originalSetParameters = senderProto.setParameters;
+        senderProto.setParameters = function (params, ...rest) {
+            try { emmyLift(params && params.encodings, this.track); } catch (e) { /* never break Meet */ }
+            return originalSetParameters.call(this, params, ...rest);
+        };
+    }
+    const pcProto = window.RTCPeerConnection && window.RTCPeerConnection.prototype;
+    if (pcProto && !pcProto.__emmyFpsLift) {
+        pcProto.__emmyFpsLift = true;
+        const originalAddTransceiver = pcProto.addTransceiver;
+        pcProto.addTransceiver = function (trackOrKind, init, ...rest) {
+            try {
+                if (typeof trackOrKind === 'object') emmyLift(init && init.sendEncodings, trackOrKind);
+            } catch (e) { /* never break Meet */ }
+            return originalAddTransceiver.call(this, trackOrKind, init, ...rest);
+        };
+    }
+})();
+
 new RTCInterceptor({
     onPeerConnectionCreate: (peerConnection) => {
         console.log('New RTCPeerConnection created:', peerConnection);
         // emmy diagnostic: what the bot SENDS to Meet — fps and size per simulcast layer, and
-        // why Chrome limits it (cpu | bandwidth | none). Paired with [streamer-in].
+        // why Chrome limits it (cpu | bandwidth | none) — plus the caps Meet set on each video
+        // sender (maxFramerate / maxBitrate / scaleResolutionDownBy). Paired with [streamer-in].
         const emmyFpsTimer = setInterval(async () => {
             if (peerConnection.connectionState === 'closed') { clearInterval(emmyFpsTimer); return; }
             try {
@@ -2138,8 +2172,22 @@ new RTCInterceptor({
                         });
                     }
                 });
+                const senders = [];
+                for (const s of peerConnection.getSenders()) {
+                    if (!s.track || s.track.kind !== 'video') continue;
+                    const p = s.getParameters() || {};
+                    senders.push({
+                        hint: s.track.contentHint || '',
+                        degradation: p.degradationPreference || '',
+                        encodings: (p.encodings || []).map(e => ({
+                            rid: e.rid || '', active: e.active,
+                            maxFramerate: e.maxFramerate, maxBitrate: e.maxBitrate,
+                            scaleDown: e.scaleResolutionDownBy,
+                        })),
+                    });
+                }
                 if (layers.length && window.ws && window.ws.sendJson) {
-                    window.ws.sendJson({ type: 'EMMY_VIDEO_FPS', hop: 'meet-out', layers: layers });
+                    window.ws.sendJson({ type: 'EMMY_VIDEO_FPS', hop: 'meet-out', layers: layers, senders: senders });
                 }
             } catch (e) {
                 console.warn('emmy fps meter (meet-out) failed:', e);
