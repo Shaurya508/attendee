@@ -293,7 +293,11 @@ class BotVideoOutputStream {
         if (!this.videoElement) return;
 
         let lastDrawTime = 0;
-        const drawInterval = 1000 / 15; // ~15fps (60fps / 4)
+        // emmy: was 1000 / 15 — on a busy Meet page the rAF ticks made that ~12-13 fps (measured
+        // 2026-09-15: 25 fps in from the streamer, 13 fps out to Meet), too few for a live
+        // avatar's lips. 30 matches captureStream(30); the 4 ms slack lets a 60 Hz rAF draw every
+        // second tick instead of skipping to the third.
+        const drawInterval = 1000 / 30 - 4;
 
         const drawFrame = (timestamp) => {
             if (
