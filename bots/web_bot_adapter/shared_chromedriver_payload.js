@@ -638,6 +638,16 @@ class BotOutputManager {
             if (needVideo && self.screenShareVideoOutputStream.sourceVideoTrack) {
                 // Clone from the source so app-level stop() doesn't kill our source. Otherwise this won't work in Teams.
                 const videoClone = self.screenShareVideoOutputStream.sourceVideoTrack.clone();
+                // emmy: a screenshare is encoded as "detail" (sharp text, frame rate dropped —
+                // Meet delivered a voice agent's page at 5 fps, measured 2026-09-15). The page
+                // carries a live avatar, so mark it motion and ignore later attempts to reset it.
+                videoClone.contentHint = "motion";
+                try {
+                    Object.defineProperty(videoClone, "contentHint", {
+                        get: () => "motion", set: () => {}, configurable: true });
+                } catch (e) {
+                    console.warn("could not pin contentHint=motion:", e);
+                }
                 stream.addTrack(videoClone);
             }
 
