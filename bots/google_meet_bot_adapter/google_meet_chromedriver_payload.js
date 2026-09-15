@@ -2120,6 +2120,31 @@ const handleAudioTrack = async (event) => {
 new RTCInterceptor({
     onPeerConnectionCreate: (peerConnection) => {
         console.log('New RTCPeerConnection created:', peerConnection);
+        // emmy diagnostic: what the bot SENDS to Meet — fps and size per simulcast layer, and
+        // why Chrome limits it (cpu | bandwidth | none). Paired with [streamer-in].
+        const emmyFpsTimer = setInterval(async () => {
+            if (peerConnection.connectionState === 'closed') { clearInterval(emmyFpsTimer); return; }
+            try {
+                const stats = await peerConnection.getStats();
+                const layers = [];
+                stats.forEach(r => {
+                    if (r.type === 'outbound-rtp' && r.kind === 'video' && (r.framesSent || 0) > 0) {
+                        layers.push({
+                            rid: r.rid || '', active: r.active,
+                            fps: r.framesPerSecond || 0,
+                            width: r.frameWidth || 0, height: r.frameHeight || 0,
+                            limit: r.qualityLimitationReason || '',
+                            encoder: r.encoderImplementation || '',
+                        });
+                    }
+                });
+                if (layers.length && window.ws && window.ws.sendJson) {
+                    window.ws.sendJson({ type: 'EMMY_VIDEO_FPS', hop: 'meet-out', layers: layers });
+                }
+            } catch (e) {
+                console.warn('emmy fps meter (meet-out) failed:', e);
+            }
+        }, 5000);
         peerConnection.addEventListener('datachannel', (event) => {
             console.log('datachannel', event);
             if (event.channel.label === "collections") {               

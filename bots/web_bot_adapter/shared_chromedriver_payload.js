@@ -884,6 +884,33 @@ class BotOutputManager {
         
         // Start latency measurement for the bot output peer connection
         this.startLatencyMeter(this.botOutputPeerConnection, "bot-output");
+        this.startEmmyFpsMeter(this.botOutputPeerConnection);
+    }
+
+    // emmy diagnostic: the frame rate the bot actually RECEIVES from the webpage streamer
+    // (before Meet's encoder). Paired with [meet-out] from the Meet payload, it shows which
+    // hop drops frames. Logged by the bot's websocket handler as "Received JSON message".
+    startEmmyFpsMeter(pc) {
+        setInterval(async () => {
+            try {
+                const stats = await pc.getStats();
+                stats.forEach(r => {
+                    if (r.type === 'inbound-rtp' && r.kind === 'video') {
+                        window.ws.sendJson({
+                            type: 'EMMY_VIDEO_FPS',
+                            hop: 'streamer-in',
+                            fps: r.framesPerSecond || 0,
+                            width: r.frameWidth || 0,
+                            height: r.frameHeight || 0,
+                            framesDropped: r.framesDropped || 0,
+                            packetsLost: r.packetsLost || 0,
+                        });
+                    }
+                });
+            } catch (e) {
+                console.warn('emmy fps meter (streamer-in) failed:', e);
+            }
+        }, 5000);
     }
 
     startLatencyMeter(pc, label="rx") {
