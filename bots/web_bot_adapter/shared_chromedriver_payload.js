@@ -292,51 +292,76 @@ class BotVideoOutputStream {
     _startVideoDrawingLoop() {
         if (!this.videoElement) return;
 
-        let lastDrawTime = 0;
-        // emmy: was 1000 / 15 — on a busy Meet page the rAF ticks made that ~12-13 fps (measured
-        // 2026-09-15: 25 fps in from the streamer, 13 fps out to Meet), too few for a live
-        // avatar's lips. 30 matches captureStream(30); the 4 ms slack lets a 60 Hz rAF draw every
-        // second tick instead of skipping to the third.
-        const drawInterval = 1000 / 30 - 4;
-
-        const drawFrame = (timestamp) => {
-            if (
-                !this.videoElement ||
-                this.videoElement.paused ||
-                this.videoElement.ended
-            ) {
-                this.videoRafId = null;
-                return;
+        const video = this.videoElement;
+        const drawCurrentFrame = () => {
+            // Resize canvas on first valid frame
+            const vw = video.videoWidth;
+            const vh = video.videoHeight;
+            if (vw && vh && (this.canvas.width !== vw || this.canvas.height !== vh)) {
+                this.canvas.width = vw;
+                this.canvas.height = vh;
             }
-
-            // Only draw if enough time has passed (throttle to 1/3 of normal rate)
-            if (timestamp - lastDrawTime >= drawInterval) {
-                // Resize canvas on first valid frame
-                const vw = this.videoElement.videoWidth;
-                const vh = this.videoElement.videoHeight;
-                if (vw && vh && (this.canvas.width !== vw || this.canvas.height !== vh)) {
-                    this.canvas.width = vw;
-                    this.canvas.height = vh;
-                }
-
-                this.canvasCtx.drawImage(
-                    this.videoElement,
-                    0,
-                    0,
-                    this.canvas.width,
-                    this.canvas.height
-                );
-
-                lastDrawTime = timestamp;
+            this.canvasCtx.drawImage(video, 0, 0, this.canvas.width, this.canvas.height);
+        };
+        const stopped = () =>
+            !this.videoElement || this.videoElement !== video || video.paused || video.ended;
+        const reportMode = (mode) => {
+            if (window.ws && window.ws.sendJson) {
+                window.ws.sendJson({ type: 'EMMY_VIDEO_FPS', hop: 'redraw', mode: mode });
             }
-
-            this.videoRafId = requestAnimationFrame(drawFrame);
         };
 
-        this.videoRafId = requestAnimationFrame(drawFrame);
+        // Fallback timer loop. emmy: was 1000 / 15, which a busy Meet page turned into ~12-13 fps
+        // (measured 2026-09-15: 25 fps in from the streamer, 13 out to Meet). 30 matches
+        // captureStream(30); the 4 ms slack lets a 60 Hz rAF draw every second tick.
+        let lastDrawTime = 0;
+        const drawInterval = 1000 / 30 - 4;
+        const rafLoop = (timestamp) => {
+            if (stopped()) { this.videoRafId = null; return; }
+            if (timestamp - lastDrawTime >= drawInterval) {
+                drawCurrentFrame();
+                lastDrawTime = timestamp;
+            }
+            this.videoRafId = requestAnimationFrame(rafLoop);
+        };
+
+        // emmy: preferred — draw exactly once per DECODED frame. The avatar arrives at 25 fps and
+        // a fixed 30 fps timer showed every 6th frame twice (visible judder). If the callback never
+        // fires (an off-DOM video may not be composited), fall back to the timer loop within 1 s.
+        if (typeof video.requestVideoFrameCallback === "function") {
+            let frames = 0;
+            const onFrame = () => {
+                if (stopped()) { this.videoVfcId = null; return; }
+                frames++;
+                if (frames === 1) reportMode('video-frame-callback');
+                drawCurrentFrame();
+                this.videoVfcId = video.requestVideoFrameCallback(onFrame);
+            };
+            this.videoVfcId = video.requestVideoFrameCallback(onFrame);
+            setTimeout(() => {
+                if (frames === 0 && !stopped() && this.videoRafId == null) {
+                    console.warn("emmy: requestVideoFrameCallback never fired — using the rAF loop");
+                    if (this.videoVfcId != null && video.cancelVideoFrameCallback) {
+                        video.cancelVideoFrameCallback(this.videoVfcId);
+                    }
+                    this.videoVfcId = null;
+                    reportMode('raf-fallback');
+                    this.videoRafId = requestAnimationFrame(rafLoop);
+                }
+            }, 1000);
+            return;
+        }
+        reportMode('raf');
+        this.videoRafId = requestAnimationFrame(rafLoop);
     }
 
     _stopVideoPlayback() {
+        if (this.videoVfcId != null) {
+            if (this.videoElement && this.videoElement.cancelVideoFrameCallback) {
+                this.videoElement.cancelVideoFrameCallback(this.videoVfcId);
+            }
+            this.videoVfcId = null;
+        }
         if (this.videoRafId != null) {
             cancelAnimationFrame(this.videoRafId);
             this.videoRafId = null;
