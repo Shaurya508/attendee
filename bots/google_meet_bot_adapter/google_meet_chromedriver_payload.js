@@ -2121,11 +2121,25 @@ const handleAudioTrack = async (event) => {
 // 25 fps source with qualityLimitationReason "none", i.e. an application cap, not CPU or
 // bandwidth. The voice agent's screenshare track is the one whose contentHint the shared
 // payload pins to "motion"; for that track only, lift any maxFramerate below 25 to 30.
+//
+// The framerate lift alone is not enough: Meet also decides the bitrate, and the two runs
+// measured 2026-09-16 differ ONLY in that number — 4 Mbps held 30 fps at 1280x720, while
+// 420 kbps collapsed to 5 fps (viewer dumps: 5 fps, 0 lost, 0 freezes). 720p30 needs ~3-4
+// Mbps, and `degradationPreference: maintain-resolution` makes the encoder pay for a starved
+// budget in frames rather than pixels. So raise the ACTIVE layer's ceiling to the value the
+// good run used. maxBitrate is a ceiling, not a floor: if the uplink really is slow,
+// congestion control still governs, and this changes nothing.
 (() => {
+    const EMMY_MIN_BITRATE = 2500000;   // below this, Meet has starved the layer
+    const EMMY_BITRATE = 4000000;       // what the smooth 2026-09-16 run was given
     const emmyLift = (encodings, track) => {
         if (!track || track.kind !== 'video' || track.contentHint !== 'motion' || !Array.isArray(encodings)) return;
         for (const enc of encodings) {
             if (typeof enc.maxFramerate === 'number' && enc.maxFramerate < 25) enc.maxFramerate = 30;
+            // Only the layer Meet is actually sending; the dormant simulcast layers keep theirs.
+            if (enc.active !== false && typeof enc.maxBitrate === 'number' && enc.maxBitrate < EMMY_MIN_BITRATE) {
+                enc.maxBitrate = EMMY_BITRATE;
+            }
         }
     };
     const senderProto = window.RTCRtpSender && window.RTCRtpSender.prototype;
