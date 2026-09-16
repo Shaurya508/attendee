@@ -2170,11 +2170,20 @@ new RTCInterceptor({
         // emmy diagnostic: what the bot SENDS to Meet — fps and size per simulcast layer, and
         // why Chrome limits it (cpu | bandwidth | none) — plus the caps Meet set on each video
         // sender (maxFramerate / maxBitrate / scaleResolutionDownBy). Paired with [streamer-in].
+        //
+        // `source` is the decisive one (added 2026-09-16): the canvas track's OWN frame rate,
+        // before the encoder. Measured that day: meet-out 5 fps at 720p while maxFramerate was
+        // 30, maxBitrate 4 Mbps and limit "none" — so neither Meet's caps nor bandwidth explain
+        // it. If source.fps is ~5, captureStream is starving the encoder (draws happen —
+        // redrawFps says 30 — but frames are not produced); if it is ~25-30, the encoder is
+        // dropping them and `degradationPreference` is the lever. `target` (targetBitrate) and
+        // `encoded`/`sent` separate "aiming low" from "producing few".
         const emmyFpsTimer = setInterval(async () => {
             if (peerConnection.connectionState === 'closed') { clearInterval(emmyFpsTimer); return; }
             try {
                 const stats = await peerConnection.getStats();
                 const layers = [];
+                const sources = [];
                 stats.forEach(r => {
                     if (r.type === 'outbound-rtp' && r.kind === 'video' && (r.framesSent || 0) > 0) {
                         layers.push({
@@ -2183,6 +2192,16 @@ new RTCInterceptor({
                             width: r.frameWidth || 0, height: r.frameHeight || 0,
                             limit: r.qualityLimitationReason || '',
                             encoder: r.encoderImplementation || '',
+                            target: r.targetBitrate || 0,
+                            encoded: r.framesEncoded || 0, sent: r.framesSent || 0,
+                        });
+                    }
+                    // The canvas track itself, BEFORE the encoder — see the note above.
+                    if (r.type === 'media-source' && r.kind === 'video') {
+                        sources.push({
+                            fps: r.framesPerSecond || 0,
+                            width: r.width || 0, height: r.height || 0,
+                            frames: r.frames || 0,
                         });
                     }
                 });
@@ -2201,7 +2220,7 @@ new RTCInterceptor({
                     });
                 }
                 if (layers.length && window.ws && window.ws.sendJson) {
-                    window.ws.sendJson({ type: 'EMMY_VIDEO_FPS', hop: 'meet-out', layers: layers, senders: senders });
+                    window.ws.sendJson({ type: 'EMMY_VIDEO_FPS', hop: 'meet-out', layers: layers, senders: senders, source: sources });
                 }
             } catch (e) {
                 console.warn('emmy fps meter (meet-out) failed:', e);
