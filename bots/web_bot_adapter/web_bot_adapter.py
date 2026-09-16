@@ -620,6 +620,15 @@ class WebBotAdapter(BotAdapter):
         options.add_argument("--disable-application-cache")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-blink-features=AutomationControlled")
+        # emmy: on a virtual display Chrome can decide this window is occluded and stop
+        # compositing. The redraw timer keeps running (redrawFps stays 30) but the canvas
+        # captureStream track then produces only ~5 frames/s — measured 2026-09-16:
+        # source.fps 5 with redrawFps 30, target 3.1 Mbps, limit "none", encoded == sent.
+        # Same build produced source.fps 30 two hours earlier, i.e. it is state, not code.
+        options.add_argument("--disable-backgrounding-occluded-windows")
+        options.add_argument("--disable-renderer-backgrounding")
+        options.add_argument("--disable-background-timer-throttling")
+        options.add_argument("--disable-features=CalculateNativeWinOcclusion")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
 
         if os.getenv("ENABLE_CHROME_SANDBOX", "false").lower() != "true":
