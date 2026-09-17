@@ -299,6 +299,17 @@ class BotVideoOutputStream {
         // second tick instead of skipping to the third.
         const drawInterval = 1000 / 30 - 4;
 
+        // emmy: on the virtual display Chrome can decide this window is occluded and stop
+        // compositing it, at which point canvas.captureStream quietly stops producing frames:
+        // the rAF timer keeps ticking (redrawFps 30) while the track emits 5 (source.fps 5),
+        // with Meet reporting limit 'none' because nothing is limiting Meet. The four
+        // --disable-*-occluded / backgrounding flags on the bot's Chrome reduced that but did
+        // not end it. requestFrame() pushes a frame explicitly, so production follows OUR draw
+        // loop instead of Chrome's compositing decisions. captureStream(30) stays as it is —
+        // upstream warns Meet complains otherwise — and requestFrame works alongside a fixed
+        // rate, simply forcing the capture the compositor would have skipped.
+        let pushFrames = !!(this.sourceVideoTrack && typeof this.sourceVideoTrack.requestFrame === 'function');
+
         const drawFrame = (timestamp) => {
             if (
                 !this.videoElement ||
@@ -329,6 +340,16 @@ class BotVideoOutputStream {
 
                 lastDrawTime = timestamp;
                 this.emmyDraws = (this.emmyDraws || 0) + 1;   // emmy: redraw-rate diagnostic
+
+                if (pushFrames) {
+                    try {
+                        this.sourceVideoTrack.requestFrame();
+                    } catch (e) {
+                        // one failure is enough — never throw 30 times a second
+                        pushFrames = false;
+                        console.warn('emmy: canvas requestFrame failed, leaving capture automatic:', e);
+                    }
+                }
             }
 
             this.videoRafId = requestAnimationFrame(drawFrame);
@@ -933,6 +954,10 @@ class BotOutputManager {
                             packetsLost: r.packetsLost || 0,
                             kbps: kbps,
                             codec: codec ? codec.mimeType : '',
+                            // emmy: the smoking gun for canvas starvation. Occlusion and
+                            // backgrounding both mark the page hidden; if source.fps collapses
+                            // while this reads 'visible', the cause is something else.
+                            vis: document.visibilityState,
                         });
                     }
                 });
