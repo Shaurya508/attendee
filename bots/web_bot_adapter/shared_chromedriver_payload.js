@@ -674,13 +674,23 @@ class BotOutputManager {
                 } catch (e) {
                     console.warn("could not pin contentHint=motion:", e);
                 }
-                // emmy: Meet also throttles a screenshare at the SOURCE, by calling
-                // applyConstraints({frameRate}) on the track. That is upstream of the sender's
-                // maxFramerate we already lift, which is exactly why lifting it never helped:
-                // source.fps sat at 5.000 sample after sample (25 frames per 5 s, dead stable)
-                // while our draw loop ran at 30 and pushed every frame explicitly, with the page
-                // visible and Meet reporting limit 'none'. A number that exact is a clock, not
-                // starvation. Refuse a frameRate ceiling; let every other constraint through.
+                // emmy: this is what caused the 5 fps screenshare, and it is NOT what it looks
+                // like. Meet calls applyConstraints({frameRate:{min:30,ideal:30}}) on this track
+                // at join — it is ASKING FOR 30, not throttling. But allowing that call collapses
+                // actual delivery to exactly 5.000 (25 frames per 5 s, dead stable, sample after
+                // sample) while the page is visible, our draw loop runs at 30, requestFrame pushes
+                // every frame, and Meet reports limit 'none'. Refusing the call holds delivery at
+                // 30. Toggling this one guard is the whole difference; nothing else changed.
+                //
+                // So the constraint is not a policy we are overriding, it is a landmine: applying
+                // ANY frameRate constraint to a canvas-capture track installs Chrome's frame-rate
+                // adapter, and on this kind of source that adapter settles far below the rate
+                // requested. Verified in Chrome 152 that {min:30,ideal:30} is accepted and leaves
+                // getSettings().frameRate reading 30 — so the damage is to DELIVERY, not to the
+                // reported setting, which is why it went unseen for so long and why every fix
+                // aimed at the encoder (maxFramerate, maxBitrate, the occlusion flags) missed it.
+                //
+                // Strip frameRate, pass everything else through untouched (width still applies).
                 const applyConstraintsOriginal = videoClone.applyConstraints.bind(videoClone);
                 videoClone.applyConstraints = function (constraints) {
                     const next = Object.assign({}, constraints || {});
