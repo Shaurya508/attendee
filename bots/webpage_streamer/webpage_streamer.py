@@ -51,28 +51,28 @@ EMMY_VIDEO_MAX_BITRATE = int(os.environ.get("EMMY_VIDEO_MAX_BITRATE", 8_000_000)
 
 def _lift_aiortc_bitrate_caps():
     """Raise aiortc's built-in video bitrate limits. Best effort: a future aiortc that renames
-    these constants must not stop the streamer from starting."""
+    these constants must not stop the streamer from starting.
+
+    Returns lines describing what changed. This runs at IMPORT time — it has to, since it must
+    beat the first encoder into existence — which is before run_webpage_streamer sets logging
+    up, so anything logged here goes nowhere. The caller keeps the lines and run() reports them
+    once logging is live."""
     from aiortc.codecs import h264, vpx
 
+    lines = []
     for module in (vpx, h264):
         try:
             before = (module.MIN_BITRATE, module.DEFAULT_BITRATE, module.MAX_BITRATE)
             module.MIN_BITRATE = EMMY_VIDEO_MIN_BITRATE
             module.DEFAULT_BITRATE = EMMY_VIDEO_MIN_BITRATE
             module.MAX_BITRATE = EMMY_VIDEO_MAX_BITRATE
-            logger.info(
-                "aiortc %s bitrate caps %s -> (%d, %d, %d)",
-                module.__name__,
-                before,
-                EMMY_VIDEO_MIN_BITRATE,
-                EMMY_VIDEO_MIN_BITRATE,
-                EMMY_VIDEO_MAX_BITRATE,
-            )
+            lines.append(f"aiortc {module.__name__} bitrate caps (min, default, max) {before} -> ({EMMY_VIDEO_MIN_BITRATE}, {EMMY_VIDEO_MIN_BITRATE}, {EMMY_VIDEO_MAX_BITRATE})")
         except AttributeError as e:
-            logger.warning("could not lift aiortc bitrate caps on %s: %s", module.__name__, e)
+            lines.append(f"WARNING: could not lift aiortc bitrate caps on {module.__name__}: {e}")
+    return lines
 
 
-_lift_aiortc_bitrate_caps()
+AIORTC_BITRATE_CAP_LINES = _lift_aiortc_bitrate_caps()
 
 
 class GstVideoStreamTrack(MediaStreamTrack):
@@ -282,6 +282,12 @@ class WebpageStreamer:
             self._audio_track = None
 
     def run(self):
+        # emmy: report the import-time bitrate lift now that logging exists, plus the capture
+        # rate — the two numbers that decide how good this hop's picture can possibly be.
+        for line in AIORTC_BITRATE_CAP_LINES:
+            logger.info(line)
+        logger.info("Capturing the display at %d fps", CAPTURE_FPS)
+
         self.display_var_for_recording = os.environ.get("DISPLAY")
         if os.environ.get("DISPLAY") is None:
             # Create virtual display only if no real display is available
