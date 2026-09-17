@@ -674,6 +674,27 @@ class BotOutputManager {
                 } catch (e) {
                     console.warn("could not pin contentHint=motion:", e);
                 }
+                // emmy: Meet also throttles a screenshare at the SOURCE, by calling
+                // applyConstraints({frameRate}) on the track. That is upstream of the sender's
+                // maxFramerate we already lift, which is exactly why lifting it never helped:
+                // source.fps sat at 5.000 sample after sample (25 frames per 5 s, dead stable)
+                // while our draw loop ran at 30 and pushed every frame explicitly, with the page
+                // visible and Meet reporting limit 'none'. A number that exact is a clock, not
+                // starvation. Refuse a frameRate ceiling; let every other constraint through.
+                const applyConstraintsOriginal = videoClone.applyConstraints.bind(videoClone);
+                videoClone.applyConstraints = function (constraints) {
+                    const next = Object.assign({}, constraints || {});
+                    if (next.frameRate != null) {
+                        try {
+                            window.ws && window.ws.sendJson && window.ws.sendJson({
+                                type: 'EMMY_VIDEO_FPS', hop: 'constraint-refused',
+                                frameRate: JSON.stringify(next.frameRate),
+                            });
+                        } catch (e) { /* a diagnostic must never break the call it reports on */ }
+                        delete next.frameRate;
+                    }
+                    return applyConstraintsOriginal(next);
+                };
                 stream.addTrack(videoClone);
             }
 

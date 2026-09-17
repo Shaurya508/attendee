@@ -2209,7 +2209,17 @@ new RTCInterceptor({
                 for (const s of peerConnection.getSenders()) {
                     if (!s.track || s.track.kind !== 'video') continue;
                     const p = s.getParameters() || {};
+                    // emmy: the TRACK's own settings, upstream of the encodings below. A
+                    // frameRate of ~5 here means applyConstraints throttled the SOURCE, which
+                    // no sender-level maxFramerate can undo — that is the difference between
+                    // "Meet is encoding few frames" and "Meet is being handed few frames".
+                    // Note `hint` is the value we pinned, so it always reads motion and is not
+                    // evidence of what Chrome thinks internally.
+                    const ts = (s.track.getSettings && s.track.getSettings()) || {};
                     senders.push({
+                        trackFps: ts.frameRate,
+                        trackSize: (ts.width || 0) + 'x' + (ts.height || 0),
+                        muted: s.track.muted, ready: s.track.readyState,
                         hint: s.track.contentHint || '',
                         degradation: p.degradationPreference || '',
                         encodings: (p.encodings || []).map(e => ({
