@@ -26,11 +26,59 @@ Gst.init(None)
 
 os.environ["PULSE_LATENCY_MSEC"] = "20"
 
+# emmy: the frames per second we capture off the virtual display. This is the FIRST hop of
+# four (this streamer -> the bot's Chrome -> Meet's encoder -> the viewer), and the bot's
+# canvas redraw and captureStream both run at 30, so anything lower here gets resampled:
+# at 25 every fifth frame is held an extra tick, which reads as judder on a talking mouth.
+# 30 makes the whole chain 30 and removes the resampling. Overridable because the box used
+# to carry this as an unversioned hand-edit.
+CAPTURE_FPS = int(os.environ.get("EMMY_CAPTURE_FPS", "30"))
+
+# emmy: aiortc encodes this hop in software and hard-caps the bitrate in Python — VP8 starts
+# at 500 kbps and never exceeds 1.5 Mbps, H264 at 1 Mbps and 3 Mbps. Meet then re-encodes
+# whatever reaches it at ~4 Mbps, and a re-encode cannot put back detail the first encode
+# threw away, so that cap — not Meet — is the sharpness ceiling of the entire chain. It also
+# explains why lifting Meet's own bitrate to 4 Mbps changed nothing visible.
+#
+# The link this protects is container-to-container on one box, so the bandwidth is free.
+# aiortc reads DEFAULT_BITRATE when it builds an encoder and re-reads MIN/MAX on every REMB
+# update (the clamp lives in the target_bitrate setter), so patching the module globals here,
+# before any peer connection exists, covers both. The floor matters as much as the ceiling:
+# without REMB feedback the encoder simply sits at DEFAULT_BITRATE forever.
+EMMY_VIDEO_MIN_BITRATE = int(os.environ.get("EMMY_VIDEO_MIN_BITRATE", 3_000_000))
+EMMY_VIDEO_MAX_BITRATE = int(os.environ.get("EMMY_VIDEO_MAX_BITRATE", 8_000_000))
+
+
+def _lift_aiortc_bitrate_caps():
+    """Raise aiortc's built-in video bitrate limits. Best effort: a future aiortc that renames
+    these constants must not stop the streamer from starting."""
+    from aiortc.codecs import h264, vpx
+
+    for module in (vpx, h264):
+        try:
+            before = (module.MIN_BITRATE, module.DEFAULT_BITRATE, module.MAX_BITRATE)
+            module.MIN_BITRATE = EMMY_VIDEO_MIN_BITRATE
+            module.DEFAULT_BITRATE = EMMY_VIDEO_MIN_BITRATE
+            module.MAX_BITRATE = EMMY_VIDEO_MAX_BITRATE
+            logger.info(
+                "aiortc %s bitrate caps %s -> (%d, %d, %d)",
+                module.__name__,
+                before,
+                EMMY_VIDEO_MIN_BITRATE,
+                EMMY_VIDEO_MIN_BITRATE,
+                EMMY_VIDEO_MAX_BITRATE,
+            )
+        except AttributeError as e:
+            logger.warning("could not lift aiortc bitrate caps on %s: %s", module.__name__, e)
+
+
+_lift_aiortc_bitrate_caps()
+
 
 class GstVideoStreamTrack(MediaStreamTrack):
     kind = "video"
 
-    def __init__(self, sink, width, height, framerate=15):
+    def __init__(self, sink, width, height, framerate=CAPTURE_FPS):
         super().__init__()
         self._sink = sink
         self._width = width
@@ -181,7 +229,7 @@ class WebpageStreamer:
 
         pipeline_desc = f"""
             ximagesrc display-name={display_var} use-damage=0 show-pointer=false
-                ! video/x-raw,framerate=15/1,width={width},height={height}
+                ! video/x-raw,framerate={CAPTURE_FPS}/1,width={width},height={height}
                 ! videoconvert
                 ! video/x-raw,format=I420,width={width},height={height}
                 ! queue max-size-buffers=5 max-size-time=0 leaky=downstream
@@ -215,7 +263,7 @@ class WebpageStreamer:
             sink=self._gst_video_sink,
             width=width,
             height=height,
-            framerate=15,
+            framerate=CAPTURE_FPS,
         )
         self._audio_track = GstAudioStreamTrack(
             sink=self._gst_audio_sink,
