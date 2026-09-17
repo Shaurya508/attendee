@@ -896,6 +896,14 @@ class BotOutputManager {
     // (before Meet's encoder). Paired with [meet-out] from the Meet payload, it shows which
     // hop drops frames. Logged by the bot's websocket handler as "Received JSON message".
     startEmmyFpsMeter(pc) {
+        // emmy: kbps and codec on THIS hop. The streamer encodes with aiortc, whose software
+        // VP8/H264 encoders are bitrate-capped by Python constants (VP8 tops out at 1.5 Mbps).
+        // Meet re-encodes whatever arrives at ~4 Mbps, which cannot restore detail this hop
+        // threw away — so a flat ceiling here is the sharpness limit of the whole chain, and
+        // no amount of tuning meet-out will move it. A reading that sits pinned at one number
+        // is the cap; one that varies with the picture is the encoder choosing.
+        let lastBytes = 0;
+        let lastAt = 0;
         setInterval(async () => {
             try {
                 const stats = await pc.getStats();
@@ -906,6 +914,14 @@ class BotOutputManager {
                 if (out) out.emmyDraws = 0;
                 stats.forEach(r => {
                     if (r.type === 'inbound-rtp' && r.kind === 'video') {
+                        const at = r.timestamp || Date.now();
+                        const bytes = r.bytesReceived || 0;
+                        // bytes * 8 / milliseconds is already kilobits per second
+                        const kbps = (lastAt && at > lastAt)
+                            ? Math.round(((bytes - lastBytes) * 8) / (at - lastAt)) : 0;
+                        lastBytes = bytes;
+                        lastAt = at;
+                        const codec = stats.get(r.codecId);
                         window.ws.sendJson({
                             type: 'EMMY_VIDEO_FPS',
                             hop: 'streamer-in',
@@ -915,6 +931,8 @@ class BotOutputManager {
                             height: r.frameHeight || 0,
                             framesDropped: r.framesDropped || 0,
                             packetsLost: r.packetsLost || 0,
+                            kbps: kbps,
+                            codec: codec ? codec.mimeType : '',
                         });
                     }
                 });
