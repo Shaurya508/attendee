@@ -793,8 +793,86 @@ class RTCInterceptor {
     }
 }
 
+// emmy: same screenshare lift as the Meet payload (see google_meet_chromedriver_payload.js).
+// Zoom's web client sends the voice agent's screenshare over WebRTC with its own frame-rate and
+// bitrate ceilings; first Zoom run (2026-10-27) looked laggy while streamer-in held 720p30 at
+// ~4.5 Mbps. For the motion-hinted share track only, lift maxFramerate < 25 to 30 and a starved
+// active layer's maxBitrate to 4 Mbps. Ceilings, not floors: congestion control still governs.
+(() => {
+    const EMMY_MIN_BITRATE = 2500000;
+    const EMMY_BITRATE = 4000000;
+    const emmyLift = (encodings, track) => {
+        if (!track || track.kind !== 'video' || track.contentHint !== 'motion' || !Array.isArray(encodings)) return;
+        for (const enc of encodings) {
+            if (typeof enc.maxFramerate === 'number' && enc.maxFramerate < 25) enc.maxFramerate = 30;
+            if (enc.active !== false && typeof enc.maxBitrate === 'number' && enc.maxBitrate < EMMY_MIN_BITRATE) {
+                enc.maxBitrate = EMMY_BITRATE;
+            }
+        }
+    };
+    const senderProto = window.RTCRtpSender && window.RTCRtpSender.prototype;
+    if (senderProto && !senderProto.__emmyFpsLift) {
+        senderProto.__emmyFpsLift = true;
+        const originalSetParameters = senderProto.setParameters;
+        senderProto.setParameters = function (params, ...rest) {
+            try { emmyLift(params && params.encodings, this.track); } catch (e) { /* never break Zoom */ }
+            return originalSetParameters.call(this, params, ...rest);
+        };
+    }
+    const pcProto = window.RTCPeerConnection && window.RTCPeerConnection.prototype;
+    if (pcProto && !pcProto.__emmyFpsLift) {
+        pcProto.__emmyFpsLift = true;
+        const originalAddTransceiver = pcProto.addTransceiver;
+        pcProto.addTransceiver = function (trackOrKind, init, ...rest) {
+            try {
+                if (typeof trackOrKind === 'object') emmyLift(init && init.sendEncodings, trackOrKind);
+            } catch (e) { /* never break Zoom */ }
+            return originalAddTransceiver.call(this, trackOrKind, init, ...rest);
+        };
+    }
+})();
+
 new RTCInterceptor({
     onPeerConnectionCreate: (peerConnection) => {
+        // emmy diagnostic: what the bot SENDS to Zoom, every 5 s — per outbound video layer
+        // (fps, size, why Chrome limits it) plus the caps on each video sender. Paired with
+        // [streamer-in]; this is the hop that decides whether the share looks smooth.
+        const emmyFpsTimer = setInterval(async () => {
+            if (peerConnection.connectionState === 'closed') { clearInterval(emmyFpsTimer); return; }
+            try {
+                const stats = await peerConnection.getStats();
+                const layers = [];
+                stats.forEach(r => {
+                    if (r.type === 'outbound-rtp' && r.kind === 'video' && (r.framesSent || 0) > 0) {
+                        layers.push({
+                            rid: r.rid || '', fps: r.framesPerSecond || 0,
+                            width: r.frameWidth || 0, height: r.frameHeight || 0,
+                            limit: r.qualityLimitationReason || '',
+                            target: r.targetBitrate || 0, sent: r.framesSent || 0,
+                        });
+                    }
+                });
+                const senders = [];
+                for (const s of peerConnection.getSenders()) {
+                    if (!s.track || s.track.kind !== 'video') continue;
+                    const p = s.getParameters() || {};
+                    senders.push({
+                        hint: s.track.contentHint || '',
+                        degradation: p.degradationPreference || '',
+                        encodings: (p.encodings || []).map(e => ({
+                            rid: e.rid || '', active: e.active,
+                            maxFramerate: e.maxFramerate, maxBitrate: e.maxBitrate,
+                            scaleDown: e.scaleResolutionDownBy,
+                        })),
+                    });
+                }
+                if (layers.length && window.ws && window.ws.sendJson) {
+                    window.ws.sendJson({ type: 'EMMY_VIDEO_FPS', hop: 'zoom-out', layers: layers, senders: senders });
+                }
+            } catch (e) {
+                console.warn('emmy fps meter (zoom-out) failed:', e);
+            }
+        }, 5000);
         console.log('New RTCPeerConnection created:', peerConnection);
 
         peerConnection.addEventListener('track', (event) => {
