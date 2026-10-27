@@ -793,6 +793,63 @@ class RTCInterceptor {
     }
 }
 
+// emmy probe (temporary, 2026-10-27): what frame rate does Zoom's web SDK ask of our tracks?
+// Reports each MediaStreamTrackProcessor Zoom creates (track kind, label, contentHint and its
+// reported settings) and the first frame-rate values it posts to its media workers, as
+// EMMY_ZOOM_PROBE messages in the worker log. Queued until window.ws exists.
+(() => {
+    const queue = [];
+    let sentFrameRateMsgs = 0;
+    const send = (data) => {
+        const msg = Object.assign({ type: 'EMMY_ZOOM_PROBE' }, data);
+        if (window.ws && window.ws.sendJson) { try { window.ws.sendJson(msg); return; } catch (e) {} }
+        queue.push(msg);
+    };
+    const flush = setInterval(() => {
+        if (!(window.ws && window.ws.sendJson)) return;
+        while (queue.length) { try { window.ws.sendJson(queue.shift()); } catch (e) { break; } }
+    }, 1000);
+    setTimeout(() => clearInterval(flush), 10 * 60 * 1000);
+    const describe = (track) => {
+        try {
+            const st = (track.getSettings && track.getSettings()) || {};
+            return { kind: track.kind, label: String(track.label || '').slice(0, 60),
+                     hint: track.contentHint || '', width: st.width, height: st.height,
+                     frameRate: st.frameRate };
+        } catch (e) { return { error: String(e) }; }
+    };
+    const Orig = window.MediaStreamTrackProcessor;
+    if (Orig && !Orig.__emmyProbe) {
+        const Wrapped = function (init) {
+            try { send({ what: 'track_processor', track: describe(init && init.track) }); } catch (e) {}
+            return new Orig(init);
+        };
+        Wrapped.prototype = Orig.prototype;
+        Wrapped.__emmyProbe = true;
+        window.MediaStreamTrackProcessor = Wrapped;
+    }
+    const watch = (proto, name) => {
+        if (!proto || proto.__emmyProbe) return;
+        proto.__emmyProbe = true;
+        const orig = proto.postMessage;
+        proto.postMessage = function (msg, ...rest) {
+            try {
+                if (sentFrameRateMsgs < 40 && msg && typeof msg === 'object') {
+                    const fr = msg.frameRate ?? (msg.payload && msg.payload.frameRate) ?? msg.fps;
+                    if (fr !== undefined) {
+                        sentFrameRateMsgs++;
+                        send({ what: 'post_frameRate', via: name, cmd: msg.cmd, frameRate: fr,
+                               processor: msg.processorName || '' });
+                    }
+                }
+            } catch (e) {}
+            return orig.call(this, msg, ...rest);
+        };
+    };
+    watch(window.Worker && window.Worker.prototype, 'Worker');
+    watch(window.MessagePort && window.MessagePort.prototype, 'MessagePort');
+})();
+
 // emmy: same screenshare lift as the Meet payload (see google_meet_chromedriver_payload.js).
 // Zoom's web client sends the voice agent's screenshare over WebRTC with its own frame-rate and
 // bitrate ceilings; first Zoom run (2026-10-27) looked laggy while streamer-in held 720p30 at

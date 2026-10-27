@@ -17,6 +17,16 @@ from bots.zoom_web_bot_adapter.zoom_web_ui_methods import UiZoomWebGenericJoinEr
 logger = logging.getLogger(__name__)
 
 
+def emmy_video_webrtc_mode() -> int | None:
+    """emmy: EMMY_ZOOM_VIDEO_WEBRTC_MODE (default "1") goes into the join signature as
+    video_webrtc_mode. 1 = the web SDK sends video through the browser's WebRTC encoder
+    instead of its own WebAssembly one, so the shared payload's sender lift and the zoom-out
+    meter reach it. The WebAssembly share measured 2026-10-27 arrived at 4 fps. "" = leave
+    the choice to Zoom (upstream behaviour)."""
+    raw = os.getenv("EMMY_ZOOM_VIDEO_WEBRTC_MODE", "1").strip()
+    return int(raw) if raw in ("0", "1") else None
+
+
 def zoom_meeting_sdk_signature(
     meeting_number: str | int,
     role: int,
@@ -87,7 +97,7 @@ class ZoomWebBotAdapter(WebBotAdapter, ZoomWebUIMethods):
         zoom_client_id = zoom_oauth_credentials["client_id"]
         zoom_client_secret = zoom_oauth_credentials["client_secret"]
 
-        self.sdk_signature = zoom_meeting_sdk_signature(self.meeting_id, 0, client_id=zoom_client_id, client_secret=zoom_client_secret)
+        self.sdk_signature = zoom_meeting_sdk_signature(self.meeting_id, 0, video_webrtc_mode=emmy_video_webrtc_mode(), client_id=zoom_client_id, client_secret=zoom_client_secret)
         self.zoom_closed_captions_language = zoom_closed_captions_language
         self.should_ask_for_recording_permission = should_ask_for_recording_permission
         self.zoom_tokens = zoom_tokens
@@ -201,7 +211,7 @@ class ZoomWebBotAdapter(WebBotAdapter, ZoomWebUIMethods):
             zoom_oauth_credentials = self.zoom_oauth_credentials_callback()
             zoom_client_id = zoom_oauth_credentials["client_id"]
             zoom_client_secret = zoom_oauth_credentials["client_secret"]
-            self.sdk_signature = zoom_meeting_sdk_signature(self.meeting_id, 0, client_id=zoom_client_id, client_secret=zoom_client_secret)
+            self.sdk_signature = zoom_meeting_sdk_signature(self.meeting_id, 0, video_webrtc_mode=emmy_video_webrtc_mode(), client_id=zoom_client_id, client_secret=zoom_client_secret)
 
             time.sleep(generic_join_error_sleep_time_seconds)  # Sleep for a bit so we're not constantly retrying
 
