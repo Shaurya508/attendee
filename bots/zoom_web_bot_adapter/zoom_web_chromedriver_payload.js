@@ -877,6 +877,25 @@ class RTCInterceptor {
                 enc.maxBitrate = EMMY_BITRATE;
             }
         }
+        // emmy: Zoom's camera sender has three simulcast layers (scaleResolutionDownBy 4, 2,
+        // 1) and in WebRTC mode activates only the /2 one: 640x360 out of our 1280x720 Stage
+        // (zoom-out meter, 2026-10-27). Keep Zoom's choice of WHICH layer is on, but make the
+        // highest active layer carry full resolution, so viewers subscribed to it get 720p.
+        let top = null;
+        for (const enc of encodings) {
+            if (enc.active === false) continue;
+            const sd = typeof enc.scaleResolutionDownBy === 'number' ? enc.scaleResolutionDownBy : 1;
+            if (!top || sd < (top.scaleResolutionDownBy ?? 1)) top = enc;
+        }
+        if (top && typeof top.scaleResolutionDownBy === 'number' && top.scaleResolutionDownBy > 1) {
+            const from = top.scaleResolutionDownBy;
+            top.scaleResolutionDownBy = 1;
+            if (typeof top.maxBitrate !== 'number' || top.maxBitrate < EMMY_BITRATE) top.maxBitrate = EMMY_BITRATE;
+            try {
+                window.ws && window.ws.sendJson && window.ws.sendJson({
+                    type: 'EMMY_VIDEO_FPS', hop: 'zoom-layer-promoted', from: from, to: 1 });
+            } catch (e) { /* never break Zoom */ }
+        }
     };
     const senderProto = window.RTCRtpSender && window.RTCRtpSender.prototype;
     if (senderProto && !senderProto.__emmyFpsLift) {
