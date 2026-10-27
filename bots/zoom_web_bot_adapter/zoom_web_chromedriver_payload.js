@@ -1738,14 +1738,7 @@ function turnOnMicAndScreenshare() {
         console.log("Microphone button not found");
     }
 
-    // Click screenshare button to turn it on
-    const screenshareButton = document.querySelector(`button[aria-label="${turnOnScreenshareArialLabel}"]`) || document.querySelector(`div[aria-label="${turnOnScreenshareArialLabel}"]`);
-    if (screenshareButton) {
-        console.log("Clicking the screenshare button to turn it on");
-        screenshareButton.click();
-    } else {
-        console.log("Screenshare button not found");
-    }
+    turnOnScreenshare();
 }
 
 function turnOffMicAndScreenshare() {
@@ -1768,14 +1761,45 @@ function turnOffMicAndScreenshare() {
     }
 }
 
-function turnOnScreenshare() {
-    // Click screenshare button to turn it on
+function clickScreenshareButton() {
     const screenshareButton = document.querySelector(`button[aria-label="${turnOnScreenshareArialLabel}"]`) || document.querySelector(`div[aria-label="${turnOnScreenshareArialLabel}"]`);
     if (screenshareButton) {
         console.log("Clicking the screenshare button to turn it on");
         screenshareButton.click();
     } else {
         console.log("Screenshare button not found");
+    }
+    return !!screenshareButton;
+}
+
+// emmy: the Share Screen button starts Zoom's default share, tuned for documents (sharp, few
+// frames). The Stage carries a moving avatar and animated charts, so start the share through the
+// SDK with optimizedForSharedVideo, which Zoom documents as favouring frame rate over resolution
+// (needs SharedArrayBuffer; zoom_web_static_server.py already sends COOP/COEP). The bot's
+// getDisplayMedia intercept still supplies the Stage stream. Falls back to the button on any
+// failure. Reports the path taken as EMMY_SHARE_MODE so the worker log shows which ran.
+function turnOnScreenshare() {
+    const report = (mode, detail) => {
+        try { window.ws?.sendJson({ type: 'EMMY_SHARE_MODE', mode: mode, detail: String(detail || '') }); } catch (e) {}
+    };
+    const sdk = window.ZoomMtg;
+    if (!sdk || typeof sdk.startScreenShare !== 'function') {
+        report('button', 'ZoomMtg.startScreenShare unavailable');
+        clickScreenshareButton();
+        return;
+    }
+    try {
+        sdk.startScreenShare({
+            optimizedForSharedVideo: true,
+            success: () => report('sdk-video-optimized', ''),
+            error: (err) => {
+                report('button', 'startScreenShare error: ' + JSON.stringify(err));
+                clickScreenshareButton();
+            },
+        });
+    } catch (e) {
+        report('button', 'startScreenShare threw: ' + e);
+        clickScreenshareButton();
     }
 }
 
