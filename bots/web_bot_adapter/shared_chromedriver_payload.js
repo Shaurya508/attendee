@@ -645,6 +645,43 @@ class BotOutputManager {
             if (needVideo && self.webcamVideoOutputStream.sourceVideoTrack) {
                 // Clone from the source so app-level stop() doesn't kill our source. Otherwise this won't work in Teams.
                 const videoClone = self.webcamVideoOutputStream.sourceVideoTrack.clone();
+                // emmy: when the Stage goes out as the bot's CAMERA (Zoom, 2026-10-27), give it the
+                // same two guards as the screenshare clone below: pin contentHint=motion (the
+                // Zoom payload's sender lift only touches motion tracks), and refuse frameRate
+                // constraints (any frameRate constraint on a canvas-capture track collapsed Meet's
+                // delivery to 5 fps — see the getDisplayMedia interceptor). Also refuse width/
+                // height constraints below 1280x720, so the app cannot shrink the HD source before
+                // its encoder sees it. Every refusal is reported as hop 'webcam-constraint-refused'.
+                try {
+                    videoClone.contentHint = "motion";
+                    Object.defineProperty(videoClone, "contentHint", {
+                        get: () => "motion", set: () => {}, configurable: true });
+                } catch (e) {
+                    console.warn("could not pin contentHint=motion on the webcam clone:", e);
+                }
+                const webcamApplyOriginal = videoClone.applyConstraints.bind(videoClone);
+                const emmyDim = (v) => (v == null ? null
+                    : typeof v === 'number' ? v
+                    : (v.exact ?? v.ideal ?? v.max ?? v.min ?? null));
+                videoClone.applyConstraints = function (constraints) {
+                    const next = Object.assign({}, constraints || {});
+                    const refused = {};
+                    if (next.frameRate != null) { refused.frameRate = next.frameRate; delete next.frameRate; }
+                    const w = emmyDim(next.width), h = emmyDim(next.height);
+                    if ((w != null && w < 1280) || (h != null && h < 720)) {
+                        refused.width = next.width; refused.height = next.height;
+                        delete next.width; delete next.height;
+                    }
+                    if (Object.keys(refused).length) {
+                        try {
+                            window.ws && window.ws.sendJson && window.ws.sendJson({
+                                type: 'EMMY_VIDEO_FPS', hop: 'webcam-constraint-refused',
+                                refused: JSON.stringify(refused),
+                            });
+                        } catch (e) { /* a diagnostic must never break the call it reports on */ }
+                    }
+                    return webcamApplyOriginal(next);
+                };
                 stream.addTrack(videoClone);
             }
 
