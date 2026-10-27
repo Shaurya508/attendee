@@ -798,6 +798,7 @@ class RTCInterceptor {
 // reported settings) and the first frame-rate values it posts to its media workers, as
 // EMMY_ZOOM_PROBE messages in the worker log. Queued until window.ws exists.
 (() => {
+    const EMMY_SHARE_FPS = 24;
     const queue = [];
     let sentFrameRateMsgs = 0;
     const send = (data) => {
@@ -834,6 +835,16 @@ class RTCInterceptor {
         const orig = proto.postMessage;
         proto.postMessage = function (msg, ...rest) {
             try {
+                // emmy: Zoom's web SDK starts every screenshare encode with a hard-coded
+                // fps: 8 (js_media.min.js, Start_Desktop_Sharing: {command:"startSharingEncode",
+                // ..., fps:8}), in both the default and optimizedForSharedVideo paths; viewers
+                // then received 4 fps (measured 2026-10-27). Ask the encoder for 24 instead,
+                // the frame rate Zoom's own 1280x720 share preset uses.
+                if (msg && typeof msg === 'object' && msg.command === 'startSharingEncode'
+                        && typeof msg.fps === 'number' && msg.fps < EMMY_SHARE_FPS) {
+                    send({ what: 'share_fps_lifted', from: msg.fps, to: EMMY_SHARE_FPS, via: name });
+                    msg = Object.assign({}, msg, { fps: EMMY_SHARE_FPS });
+                }
                 if (sentFrameRateMsgs < 40 && msg && typeof msg === 'object') {
                     const fr = msg.frameRate ?? (msg.payload && msg.payload.frameRate) ?? msg.fps;
                     if (fr !== undefined) {
