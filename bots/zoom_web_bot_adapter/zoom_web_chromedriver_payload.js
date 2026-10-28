@@ -877,23 +877,18 @@ class RTCInterceptor {
                 enc.maxBitrate = EMMY_BITRATE;
             }
         }
-        // emmy: Zoom's camera sender has three simulcast layers (scaleResolutionDownBy 4, 2,
-        // 1) and in WebRTC mode activates only the /2 one: 640x360 out of our 1280x720 Stage
-        // (zoom-out meter, 2026-10-27). Keep Zoom's choice of WHICH layer is on, but make the
-        // highest active layer carry full resolution, so viewers subscribed to it get 720p.
-        let top = null;
+        // emmy: Zoom's camera sender has three simulcast layers. Its normal layer is
+        // scaleResolutionDownBy 2 (640x360 of our 1280x720 Stage); send that one at full
+        // resolution. Leave every other value alone — 4/5 are thumbnail layers and 2.67 etc. are
+        // Zoom's deliberate step-downs; forcing those to 1 made Zoom re-set the sender every
+        // second and left a thumbnail layer sending no frames (live 2026-10-28).
         for (const enc of encodings) {
-            if (enc.active === false) continue;
-            const sd = typeof enc.scaleResolutionDownBy === 'number' ? enc.scaleResolutionDownBy : 1;
-            if (!top || sd < (top.scaleResolutionDownBy ?? 1)) top = enc;
-        }
-        if (top && typeof top.scaleResolutionDownBy === 'number' && top.scaleResolutionDownBy > 1) {
-            const from = top.scaleResolutionDownBy;
-            top.scaleResolutionDownBy = 1;
-            if (typeof top.maxBitrate !== 'number' || top.maxBitrate < EMMY_BITRATE) top.maxBitrate = EMMY_BITRATE;
+            if (enc.active === false || enc.scaleResolutionDownBy !== 2) continue;
+            enc.scaleResolutionDownBy = 1;
+            if (typeof enc.maxBitrate !== 'number' || enc.maxBitrate < EMMY_BITRATE) enc.maxBitrate = EMMY_BITRATE;
             try {
                 window.ws && window.ws.sendJson && window.ws.sendJson({
-                    type: 'EMMY_VIDEO_FPS', hop: 'zoom-layer-promoted', from: from, to: 1 });
+                    type: 'EMMY_VIDEO_FPS', hop: 'zoom-layer-promoted', from: 2, to: 1 });
             } catch (e) { /* never break Zoom */ }
         }
     };
@@ -901,9 +896,38 @@ class RTCInterceptor {
     if (senderProto && !senderProto.__emmyFpsLift) {
         senderProto.__emmyFpsLift = true;
         const originalSetParameters = senderProto.setParameters;
+        const originalGetParameters = senderProto.getParameters;
+        // emmy: what Zoom last ASKED for, per sender, so getParameters can report it back.
+        // Zoom reads its sender back and re-applies whatever differs; showing it our full-res
+        // override made it re-set the sender about once a second. The real parameters stay
+        // readable through window.__emmyRealGetParameters (the zoom-out meter uses it).
+        const requested = new WeakMap();
+        window.__emmyRealGetParameters = (sender) => originalGetParameters.call(sender);
         senderProto.setParameters = function (params, ...rest) {
-            try { emmyLift(params && params.encodings, this.track); } catch (e) { /* never break Zoom */ }
+            try {
+                const encs = params && params.encodings;
+                if (Array.isArray(encs) && this.track && this.track.kind === 'video') {
+                    requested.set(this, encs.map(e => ({ scaleResolutionDownBy: e.scaleResolutionDownBy,
+                                                         maxBitrate: e.maxBitrate,
+                                                         maxFramerate: e.maxFramerate })));
+                }
+                emmyLift(encs, this.track);
+            } catch (e) { /* never break Zoom */ }
             return originalSetParameters.call(this, params, ...rest);
+        };
+        senderProto.getParameters = function (...args) {
+            const params = originalGetParameters.apply(this, args);
+            try {
+                const asked = requested.get(this);
+                if (asked && params && Array.isArray(params.encodings) && params.encodings.length === asked.length) {
+                    params.encodings.forEach((e, i) => {
+                        for (const k of ['scaleResolutionDownBy', 'maxBitrate', 'maxFramerate']) {
+                            if (asked[i][k] === undefined) delete e[k]; else e[k] = asked[i][k];
+                        }
+                    });
+                }
+            } catch (e) { /* never break Zoom */ }
+            return params;
         };
     }
     const pcProto = window.RTCPeerConnection && window.RTCPeerConnection.prototype;
@@ -942,7 +966,7 @@ new RTCInterceptor({
                 const senders = [];
                 for (const s of peerConnection.getSenders()) {
                     if (!s.track || s.track.kind !== 'video') continue;
-                    const p = s.getParameters() || {};
+                    const p = (window.__emmyRealGetParameters ? window.__emmyRealGetParameters(s) : s.getParameters()) || {};
                     senders.push({
                         hint: s.track.contentHint || '',
                         degradation: p.degradationPreference || '',
